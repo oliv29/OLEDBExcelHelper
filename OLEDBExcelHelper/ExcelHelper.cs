@@ -38,6 +38,16 @@ namespace Benchmarking
             _connection = connection;                
         }
 
+        public int InsertData(string worksheetName, string dataRowValue)
+        {
+            using (OleDbCommand dbCommand = _connection.CreateCommand())
+            {
+                var sqlCommandQuery = string.Format("INSERT INTO [{0}] VALUES ({1})", worksheetName, dataRowValue);
+
+                return ExecuteQuery(dbCommand, sqlCommandQuery);
+            }
+        }
+
         public void PrepareWorksheet(string worksheetName, IEnumerable<string> memoColumns)        
         {    
             worksheetName = FormatWorksheetName(worksheetName);
@@ -59,23 +69,26 @@ namespace Benchmarking
 
         private void CreateNewWorksheet(string worksheetName, Dictionary<string, string> columnsToAdd)
         {
-            if (columnsToAdd.Count == 0)
-                columnsToAdd = _defaultWorksheetColumns;
-
             using (OleDbCommand dbCommand = _connection.CreateCommand())
             {
                 var commandQuery = string.Format("CREATE TABLE [{0}] (", worksheetName);
 
-                foreach (var column in columnsToAdd)
+                foreach (var column in SelectValidColumnsSet(columnsToAdd))
                 {
                     commandQuery += string.Format("[{0}] {1},", column.Key, column.Value);
                 }
 
                 commandQuery = commandQuery.Substring(0, commandQuery.Length - 1) + ")";
 
-                dbCommand.CommandText = commandQuery;
-                dbCommand.ExecuteNonQuery();
+                ExecuteQuery(dbCommand, commandQuery);
             }
+        }
+
+        private Dictionary<string, string> SelectValidColumnsSet(Dictionary<string, string> computedColumns)
+        {
+            return computedColumns.Count == 0
+                ? (_currentWorksheetColumns.Count == 0) ? _defaultWorksheetColumns : _currentWorksheetColumns
+                : computedColumns;
         }
 
         private Dictionary<string, string> CreateNewColumns(IEnumerable<string> worksheetColumns, IEnumerable<string> memoColumns)
@@ -87,7 +100,8 @@ namespace Benchmarking
                 dctColumnsToAdd[column] = memoColumns.Contains(column) ? "MEMO" : "TEXT";
             }
 
-            _currentWorksheetColumns = dctColumnsToAdd;
+            if (dctColumnsToAdd.Count > 0)
+                _currentWorksheetColumns = dctColumnsToAdd;
 
             return dctColumnsToAdd;
         }
@@ -134,16 +148,6 @@ namespace Benchmarking
 
                 ExecuteQuery(dbCommand, commandText);
             }
-        }
-
-        private int ExecuteQuery(OleDbCommand command, string queryToExecute)
-        {
-            if (string.IsNullOrWhiteSpace(queryToExecute))
-                throw new ArgumentNullException("queryToExecute");
-
-            command.CommandText = queryToExecute;
-
-            return command.ExecuteNonQuery();
         }
 
         private bool WorksheetExists(string worksheetName)
@@ -194,12 +198,28 @@ namespace Benchmarking
                     }
                 }
 
+                if (existingColumns.Count != _defaultWorksheetColumns.Count) 
+                { 
+                    return Enumerable.Empty<string>();
+                }
+
                 return existingColumns;
             }
             catch (Exception ex)
             {
                 throw new Exception(string.Format("An error occured on columns fetching [{0}]", ex.Message));
             }
+        }
+
+        private int ExecuteQuery(OleDbCommand command, string queryToExecute)
+        {
+            if (string.IsNullOrWhiteSpace(queryToExecute))
+                throw new ArgumentNullException("queryToExecute");
+
+            command.CommandText = queryToExecute;
+            command.CommandType = CommandType.Text;
+
+            return command.ExecuteNonQuery();
         }
 
         private string FormatWorksheetName(string worksheetName)
@@ -212,6 +232,5 @@ namespace Benchmarking
 
             return worksheetName;
         }
-
     }
 }
