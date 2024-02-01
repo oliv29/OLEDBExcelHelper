@@ -1,12 +1,15 @@
-﻿using System.Data;
+﻿using OLEDBExcelHelper.Contracts;
+using System.Data;
 using System.Data.OleDb;
 
 namespace Benchmarking
 {
-    internal class ExcelHelper
+    internal class ExcelHelper : IExcelHelper
     {
-        private readonly string             _connectionString;
-        private readonly OleDbConnection    _connection;
+        #region Fields
+
+        private readonly string _connectionString;
+        private OleDbConnection _connection;
 
         private const string COLUMN_SCHEMA_NAME = "ColumnName";
 
@@ -25,22 +28,35 @@ namespace Benchmarking
             { "Leistungsnummer", "TEXT" },
             { "Leistungsbeschreibung", "TEXT" },
             { "Menge", "TEXT" },
-            { "Bemerkungen", "MEMO" },
+            { "Bemerkungen", "MEMO" }
         };
 
+        #endregion Fields
+
+        #region Instance
+
+        /// <summary>
+        /// Public constructor
+        /// </summary>
+        /// <param name="connectionString">connectionString</param>
         public ExcelHelper(string connectionString)
         {
-            _connectionString = connectionString;                
+            _connectionString = connectionString ?? throw new ArgumentNullException("Provided connection string is null or empty!");                
         }
 
-        public ExcelHelper(OleDbConnection connection)
-        {
-            _connection = connection;                
-        }
+        #endregion Instance
 
+        #region Public section
+
+        /// <summary>
+        /// Inserts a data row in the specified worksheeet
+        /// </summary>
+        /// <param name="worksheetName">worksheetName</param>
+        /// <param name="dataRowValue">dataRowValue</param>
+        /// <returns>Row(s) affected (TODO: update to accept collection)</returns>
         public int InsertData(string worksheetName, string dataRowValue)
         {
-            using (OleDbCommand dbCommand = _connection.CreateCommand())
+            using (OleDbCommand dbCommand = Connection.CreateCommand())
             {
                 var sqlCommandQuery = string.Format("INSERT INTO [{0}] VALUES ({1})", worksheetName, dataRowValue);
 
@@ -48,28 +64,57 @@ namespace Benchmarking
             }
         }
 
+        /// <summary>
+        /// This function basically changes the column type (e.g. from text to memo, so that it accepts more than 255 chars (for Excel 8))
+        /// </summary>
+        /// <param name="worksheetName">worksheetName</param>
+        /// <param name="memoColumns">memoColumns</param>
         public void PrepareWorksheet(string worksheetName, IEnumerable<string> memoColumns)        
-        {    
+        {
+            var newWorksheetName = worksheetName;
+
             worksheetName = FormatWorksheetName(worksheetName);
 
             if (WorksheetExists(worksheetName)) 
             {
-                var existingHeaderColumns   = GetColumnsNames(worksheetName);
-                var newColumns              = CreateNewColumns(existingHeaderColumns, memoColumns);
-
-                DropWorksheet(worksheetName);
-
-                CreateNewWorksheet(worksheetName, newColumns);
+                UpdateWorksheet(worksheetName, memoColumns);
             }
             else
             {
-                CreateNewWorksheet(worksheetName, _currentWorksheetColumns);
+                CreateWorksheet(newWorksheetName, _currentWorksheetColumns);
             }
         }
 
-        private void CreateNewWorksheet(string worksheetName, Dictionary<string, string> columnsToAdd)
+        public void Dispose()
         {
-            using (OleDbCommand dbCommand = _connection.CreateCommand())
+            if (Connection != null)
+            {
+                if (Connection.State != ConnectionState.Closed)
+                    Connection.Close(); //will automatically call Dispose()
+
+                _connection = null;
+            }
+        }
+
+        #endregion Public section
+
+        #region Private section
+
+        private void UpdateWorksheet(string worksheetName, IEnumerable<string> memoColumns)
+        {
+            var existingHeaderColumns = GetColumnsNames(worksheetName);
+
+            if (existingHeaderColumns.Any())
+                ClearWorksheet(worksheetName);
+
+            var newColumns = CreateNewColumns(existingHeaderColumns, memoColumns);
+
+            CreateWorksheet(worksheetName, newColumns);
+        }
+
+        private void CreateWorksheet(string worksheetName, Dictionary<string, string> columnsToAdd)
+        {
+            using (OleDbCommand dbCommand = Connection.CreateCommand())
             {
                 var commandQuery = string.Format("CREATE TABLE [{0}] (", worksheetName);
 
@@ -106,64 +151,39 @@ namespace Benchmarking
             return dctColumnsToAdd;
         }
 
-        private void DropWorksheetColumns(string worksheetName, IEnumerable<string> columnsToDrop)
+        /// <summary>
+        /// Clears worksheet's data (including header columns)
+        /// </summary>
+        /// <param name="worksheetName">worksheetName</param>
+        private void ClearWorksheet(string worksheetName)
         {
-            using (OleDbCommand dbCommand = _connection.CreateCommand())
+            using (OleDbCommand dbCommand = Connection.CreateCommand())
             {
-                var commandText = string.Format("ALTER TABLE [{0}] DROP COLUMN ", worksheetName);
-
-                foreach (var column in columnsToDrop)
-                {
-                    commandText += string.Format("[{0}],", column);
-                }
-
-                commandText = commandText.Substring(0, commandText.Length - 1);
+                var commandText = string.Format("DELETE FROM [{0}]", worksheetName);
 
                 ExecuteQuery(dbCommand, commandText);
             }
         }
 
-        private void DropWorksheet(string worksheetName)
-        {
-            using (OleDbCommand dbCommand = _connection.CreateCommand())
-            {
-                var commandText = string.Format("DROP TABLE [{0}]", worksheetName);
-
-                ExecuteQuery(dbCommand, commandText);
-            }
-        }
-
-        private void AddWorksheetColumns(string worksheetName, Dictionary<string, string> columnsToAdd)
-        {
-            using (OleDbCommand dbCommand = _connection.CreateCommand())
-            {
-                var commandText = string.Format("ALTER TABLE [{0}$] ADD COLUMN ", worksheetName);
-
-                foreach (var column in columnsToAdd)
-                {
-                    commandText += string.Format("[{0}] {1},", column.Key, column.Value);
-                }
-
-                commandText = commandText.Substring(0, commandText.Length - 1);
-
-                ExecuteQuery(dbCommand, commandText);
-            }
-        }
-
+        /// <summary>
+        /// Checks if a worksheet specified by name, exists in the current workbook
+        /// </summary>
+        /// <param name="worksheetName">worksheetName</param>
+        /// <returns>True if worksheet exists, false otherwise</returns>
         private bool WorksheetExists(string worksheetName)
         {
-            var existingWorksheets = GetWorksheetsNames(_connection);
+            var existingWorksheets = GetWorksheetsNames();
 
             return existingWorksheets.Any(x => x.Equals(worksheetName));
         }
 
-        private IEnumerable<string> GetWorksheetsNames(OleDbConnection connection)
+        private IEnumerable<string> GetWorksheetsNames()
         {
             var existingWorksheets = new List<string>();
 
             try
             {
-                DataTable dtSheetsNames = connection.GetOleDbSchemaTable(OleDbSchemaGuid.Tables, new object[] { null, null, null, "TABLE" }) ?? throw new InvalidOperationException("Could not retrieve worksheets!");
+                DataTable dtSheetsNames = Connection.GetOleDbSchemaTable(OleDbSchemaGuid.Tables, new object[] { null, null, null, "TABLE" }) ?? throw new InvalidOperationException("Could not retrieve worksheets!");
 
                 foreach (DataRow row in dtSheetsNames.Rows)
                 {
@@ -184,7 +204,7 @@ namespace Benchmarking
 
             try
             {
-                using (var command = new OleDbCommand(string.Format("SELECT * FROM [{0}]", worksheetName), _connection))
+                using (var command = new OleDbCommand(string.Format("SELECT * FROM [{0}]", worksheetName), Connection))
                 {
                     using (var reader = command.ExecuteReader(CommandBehavior.SchemaOnly))
                     {
@@ -198,12 +218,7 @@ namespace Benchmarking
                     }
                 }
 
-                if (existingColumns.Count != _defaultWorksheetColumns.Count) 
-                { 
-                    return Enumerable.Empty<string>();
-                }
-
-                return existingColumns;
+                return (existingColumns.Count != _defaultWorksheetColumns.Count) ? Enumerable.Empty<string>() : existingColumns;
             }
             catch (Exception ex)
             {
@@ -232,5 +247,69 @@ namespace Benchmarking
 
             return worksheetName;
         }
+
+        private OleDbConnection Connection
+        {
+            get
+            {
+                if (_connection == null)
+                    _connection = new OleDbConnection(_connectionString);
+
+                if (_connection.State != ConnectionState.Open)
+                    _connection.Open();
+
+                return _connection;
+            }
+        }
+
+        #region Not used
+
+        /// <summary>
+        /// Drops worksheet's columns
+        /// </summary>
+        /// <param name="worksheetName">worksheetName</param>
+        /// <param name="columnsToDrop">columnsToDrop</param>
+        private void DropWorksheetColumns(string worksheetName, IEnumerable<string> columnsToDrop)
+        {
+            using (OleDbCommand dbCommand = Connection.CreateCommand())
+            {
+                var commandText = string.Format("ALTER TABLE [{0}] DROP COLUMN ", worksheetName);
+
+                foreach (var column in columnsToDrop)
+                {
+                    commandText += string.Format("[{0}],", column);
+                }
+
+                commandText = commandText.Substring(0, commandText.Length - 1);
+
+                ExecuteQuery(dbCommand, commandText);
+            }
+        }
+
+        /// <summary>
+        /// Adds columns to an existing worksheet
+        /// </summary>
+        /// <param name="worksheetName">worksheetName</param>
+        /// <param name="columnsToAdd">columnsToAdd</param>
+        private void AddWorksheetColumns(string worksheetName, Dictionary<string, string> columnsToAdd)
+        {
+            using (OleDbCommand dbCommand = Connection.CreateCommand())
+            {
+                var commandText = string.Format("ALTER TABLE [{0}$] ADD COLUMN ", worksheetName);
+
+                foreach (var column in columnsToAdd)
+                {
+                    commandText += string.Format("[{0}] {1},", column.Key, column.Value);
+                }
+
+                commandText = commandText.Substring(0, commandText.Length - 1);
+
+                ExecuteQuery(dbCommand, commandText);
+            }
+        }
+
+        #endregion Not uses
+
+        #endregion Private section
     }
 }
